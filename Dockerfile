@@ -1,34 +1,99 @@
-# Dockerfile
-FROM node:18-alpine
+# Dockerfile - Optimized for production
+FROM node:18-alpine AS builder
 
+# Set working directory
 WORKDIR /app
 
-# Install dependencies
+# Copy package files
 COPY package*.json ./
-RUN npm ci --only=production
 
-# Copy application code
+# Install dependencies (including dev dependencies for build)
+RUN npm ci --include=dev
+
+# Copy source code
 COPY . .
 
-# Create data directory for SQLite
-RUN mkdir -p /app/data
+# Remove dev dependencies and clean npm cache
+RUN npm prune --production && npm cache clean --force
+
+# Production stage
+FROM node:18-alpine AS production
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+
+# Create app user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodeuser -u 1001
+
+# Set working directory
+WORKDIR /app
+
+# Copy built application from builder stage
+COPY --from=builder --chown=nodeuser:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nodeuser:nodejs /app/package*.json ./
+COPY --chown=nodeuser:nodejs server.js setup-database.js ./
+COPY --chown=nodeuser:nodejs public ./public
+
+# Create data directory with proper permissions
+RUN mkdir -p /app/data /app/logs && \
+    chown -R nodeuser:nodejs /app/data /app/logs
+
+# Switch to non-root user
+USER nodeuser
 
 # Expose port
 EXPOSE 3000
 
+# Add labels for better management
+LABEL maintainer="your-team@company.com"
+LABEL version="1.0"
+LABEL description="Patient Data Collection API"
+
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
 
-# Start application
-CMD ["npm", "start"]
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
 
-# docker-compose.yml
+# Start the application
+CMD ["node", "server.js"]
+
+# .dockerignore
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+.env
+.nyc_output
+coverage
+.coverage
+.coverage.*
+.cache
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+.eslintrc.js
+.prettierrc
+tests/
+*.test.js
+.jenkins
+Jenkinsfile
+*.md
+.vscode/
+.idea/
+*.log
+patient_data.db
+
+# docker-compose.prod.yml
 version: '3.8'
 
 services:
   patient-data-api:
-    build: .
+    image: your-dockerhub-username/patient-data-collection:latest
+    container_name: patient-data-prod
     ports:
       - "3000:3000"
     environment:
@@ -36,72 +101,157 @@ services:
       - PORT=3000
       - ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - patient_data:/app/data
+      - patient_logs:/app/logs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
   nginx:
     image: nginx:alpine
+    container_name: patient-data-nginx
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./ssl:/etc/nginx/ssl
+      - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
     depends_on:
       - patient-data-api
     restart: unless-stopped
 
-# nginx.conf
+volumes:
+  patient_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/patient-data/production
+  patient_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/patient-data/logs
+  nginx_logs:
+    driver: local
+
+# nginx.prod.conf
 events {
     worker_connections 1024;
+    use epoll;
 }
 
 http {
-    upstream api {
-        server patient-data-api:3000;
-    }
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Logging
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+    error_log /var/log/nginx/error.log warn;
+
+    # Performance optimizations
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+
+    # Gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1000;
+    gzip_types
+        text/plain
+        text/css
+        application/json
+        application/javascript
+        text/xml
+        application/xml;
 
     # Rate limiting
     limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=health:10m rate=30r/s;
 
-    server {
-        listen 80;
-        server_name your-domain.com;
-        
-        # Redirect HTTP to HTTPS
-        return 301 https://$server_name$request_uri;
+    # Upstream backend
+    upstream api_backend {
+        server patient-data-api:3000 max_fails=3 fail_timeout=30s;
+        keepalive 32;
     }
 
+    # HTTP redirect to HTTPS
+    server {
+        listen 80;
+        server_name _;
+        return 301 https://$host$request_uri;
+    }
+
+    # HTTPS server
     server {
         listen 443 ssl http2;
         server_name your-domain.com;
 
-        # SSL configuration (update paths as needed)
+        # SSL configuration
         ssl_certificate /etc/nginx/ssl/cert.pem;
         ssl_certificate_key /etc/nginx/ssl/key.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
+        ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
+        ssl_prefer_server_ciphers off;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
 
         # Security headers
-        add_header X-Frame-Options DENY;
-        add_header X-Content-Type-Options nosniff;
-        add_header X-XSS-Protection "1; mode=block";
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'" always;
 
-        location / {
+        # Health check endpoint (higher rate limit)
+        location /health {
+            limit_req zone=health burst=10 nodelay;
+            proxy_pass http://api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            access_log off;
+        }
+
+        # API endpoints
+        location /api/ {
             limit_req zone=api burst=20 nodelay;
             
-            proxy_pass http://api;
+            proxy_pass http://api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_cache_bypass $http_upgrade;
             
             # Timeouts
             proxy_connect_timeout 60s;
@@ -109,198 +259,15 @@ http {
             proxy_read_timeout 60s;
         }
 
-        location /health {
-            proxy_pass http://api;
-            access_log off;
+        # Static files
+        location / {
+            proxy_pass http://api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
         }
     }
 }
-
-# deploy.sh
-#!/bin/bash
-
-set -e
-
-echo "Starting deployment to EC2..."
-
-# Configuration
-APP_NAME="patient-data-collection"
-DEPLOY_USER="ec2-user"
-SERVER_IP="YOUR_EC2_IP_HERE"
-DEPLOY_PATH="/opt/${APP_NAME}"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-print_status() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Check if SSH key exists
-if [ ! -f "$HOME/.ssh/your-ec2-key.pem" ]; then
-    print_error "SSH key not found. Please ensure your EC2 key pair is at ~/.ssh/your-ec2-key.pem"
-    exit 1
-fi
-
-# Create deployment package
-print_status "Creating deployment package..."
-tar -czf ${APP_NAME}.tar.gz \
-    --exclude='node_modules' \
-    --exclude='.git' \
-    --exclude='*.log' \
-    --exclude='patient_data.db' \
-    package.json server.js setup-database.js Dockerfile docker-compose.yml nginx.conf
-
-# Upload to EC2
-print_status "Uploading to EC2..."
-scp -i ~/.ssh/your-ec2-key.pem ${APP_NAME}.tar.gz ${DEPLOY_USER}@${SERVER_IP}:/tmp/
-
-# Deploy on EC2
-print_status "Deploying on EC2..."
-ssh -i ~/.ssh/your-ec2-key.pem ${DEPLOY_USER}@${SERVER_IP} << EOF
-    set -e
-    
-    # Create deployment directory
-    sudo mkdir -p ${DEPLOY_PATH}
-    sudo chown ${DEPLOY_USER}:${DEPLOY_USER} ${DEPLOY_PATH}
-    
-    # Extract and setup
-    cd ${DEPLOY_PATH}
-    tar -xzf /tmp/${APP_NAME}.tar.gz
-    
-    # Install dependencies
-    npm install --production
-    
-    # Setup database
-    node setup-database.js
-    
-    # Setup systemd service if it doesn't exist
-    if [ ! -f /etc/systemd/system/${APP_NAME}.service ]; then
-        sudo tee /etc/systemd/system/${APP_NAME}.service > /dev/null <<EOL
-[Unit]
-Description=Patient Data Collection API
-After=network.target
-
-[Service]
-Type=simple
-User=${DEPLOY_USER}
-WorkingDirectory=${DEPLOY_PATH}
-ExecStart=/usr/bin/node server.js
-Restart=always
-RestartSec=10
-Environment=NODE_ENV=production
-Environment=PORT=3000
-
-[Install]
-WantedBy=multi-user.target
-EOL
-        
-        sudo systemctl daemon-reload
-        sudo systemctl enable ${APP_NAME}
-    fi
-    
-    # Restart service
-    sudo systemctl restart ${APP_NAME}
-    
-    # Check status
-    sleep 5
-    sudo systemctl status ${APP_NAME} --no-pager
-    
-    echo "Deployment completed successfully!"
-EOF
-
-# Cleanup
-rm ${APP_NAME}.tar.gz
-
-print_status "Deployment completed! Your API should be running at http://${SERVER_IP}:3000"
-print_status "Health check: curl http://${SERVER_IP}:3000/health"
-
-# ec2-setup.sh
-#!/bin/bash
-
-# Run this script on your EC2 instance to set up the environment
-
-set -e
-
-echo "Setting up EC2 environment for Patient Data Collection API..."
-
-# Update system
-sudo yum update -y
-
-# Install Node.js
-curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-sudo yum install -y nodejs
-
-# Install additional tools
-sudo yum install -y git curl wget htop
-
-# Install Docker (optional, for containerized deployment)
-sudo yum install -y docker
-sudo systemctl start docker
-sudo systemctl enable docker
-sudo usermod -a -G docker ec2-user
-
-# Install Docker Compose
-sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-
-# Create application directory
-sudo mkdir -p /opt/patient-data-collection
-sudo chown ec2-user:ec2-user /opt/patient-data-collection
-
-# Create logs directory
-sudo mkdir -p /var/log/patient-data-collection
-sudo chown ec2-user:ec2-user /var/log/patient-data-collection
-
-# Setup firewall (if needed)
-# sudo firewall-cmd --permanent --add-port=3000/tcp
-# sudo firewall-cmd --reload
-
-echo "EC2 environment setup completed!"
-echo "You can now run the deploy.sh script from your local machine."
-
-# .env template
-# Copy this to .env and fill in your values
-NODE_ENV=production
-PORT=3000
-ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com
-
-# Database settings (SQLite is file-based, no additional config needed)
-DATABASE_PATH=./patient_data.db
-
-# Security settings (optional - for JWT if you add authentication later)
-# JWT_SECRET=your-super-secret-jwt-key-here
-# SESSION_SECRET=your-session-secret-here
-
-# systemd service template (patient-data-collection.service)
-[Unit]
-Description=Patient Data Collection API
-After=network.target
-
-[Service]
-Type=simple
-User=ec2-user
-WorkingDirectory=/opt/patient-data-collection
-ExecStart=/usr/bin/node server.js
-Restart=always
-RestartSec=10
-Environment=NODE_ENV=production
-Environment=PORT=3000
-
-# Logging
-StandardOutput=append:/var/log/patient-data-collection/access.log
-StandardError=append:/var/log/patient-data-collection/error.log
-
-[Install]
-WantedBy=multi-user.target
