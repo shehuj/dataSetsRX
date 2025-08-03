@@ -1,0 +1,26 @@
+# .dockerignore
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+.env
+.nyc_output
+coverage
+.coverage
+.coverage.*
+.cache
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+.eslintrc.js
+.prettierrc
+tests/
+*.test.js
+.jenkins
+Jenkinsfile
+*.md
+.vscode/
+.idea/
+*.log
+patient_data.db
