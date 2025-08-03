@@ -100,3 +100,9 @@ EOL
     
     echo "Deployment completed successfully!"
 EOF
+
+# Cleanup
+rm ${APP_NAME}.tar.gz
+
+print_status "Deployment completed! Your API should be running at http://${SERVER_IP}:3000"
+print_status "Health check: curl http://${SERVER_IP}:3000/health"
