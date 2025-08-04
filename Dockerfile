@@ -58,4 +58,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 ENTRYPOINT ["dumb-init", "--"]
 
 # Start the application
+<<<<<<< HEAD
 CMD ["node", "server.js"]
+=======
+CMD ["node", "server.js"]
+>>>>>>> 08d4de7715cfb06336d339f873b0d46f214d59e2

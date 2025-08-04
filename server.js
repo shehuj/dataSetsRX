@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
@@ -321,3 +322,18 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
+=======
+// server.js
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { v4: uuidv4 } = require('uuid');
+const Joi = require('joi');
+const path = require('path');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+>>>>>>> 08d4de7715cfb06336d339f873b0d46f214d59e2
