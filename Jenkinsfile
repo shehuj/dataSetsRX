@@ -2,15 +2,13 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-        DOCKERHUB_REPO = 'captcloud01/patient-data-collection'
-
-        APP_NAME = 'patient-data-collection'
-        NODE_VERSION = '18'
-
-        BUILD_VERSION = "${BUILD_NUMBER}"
-        DOCKER_LATEST_TAG = "latest"
-        // GIT_COMMIT_SHORT and DOCKER_TAG will be set dynamically in a script block
+        DOCKERHUB_CREDENTIALS   = credentials('dockerhub-credentials')
+        DOCKERHUB_REPO          = 'captcloud01/patient-data-collection'
+        APP_NAME                = 'patient-data-collection'
+        NODE_VERSION            = '18'
+        BUILD_VERSION           = "${BUILD_NUMBER}"
+        DOCKER_LATEST_TAG       = "latest"
+        // GIT_COMMIT_SHORT and DOCKER_TAG will be set at runtime
     }
 
     options {
@@ -20,47 +18,44 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
+        stage('Checkout & Meta') {
             steps {
-                echo "🔄 Checking out code..."
+                echo "🔄 Checkout"
                 checkout scm
 
                 script { _ ->
                     env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-                    env.DOCKER_TAG = "${env.BUILD_VERSION}-${env.GIT_COMMIT_SHORT}"
-                    currentBuild.displayName = "#${env.BUILD_VERSION} - ${env.GIT_COMMIT_SHORT}"
-                    currentBuild.description = "Branch: ${env.BRANCH_NAME ?: 'unknown'}"
+                    env.DOCKER_TAG       = "${env.BUILD_VERSION}-${env.GIT_COMMIT_SHORT}"
+                    currentBuild.displayName   = "#${env.BUILD_VERSION} – ${env.GIT_COMMIT_SHORT}"
+                    currentBuild.description   = "Branch: ${env.BRANCH_NAME ?: 'unknown'}"
                 }
             }
         }
 
-        stage('Environment Setup') {
+        stage('Setup Environment') {
             steps {
-                echo "🏗️ Setting up build environment..."
+                echo "🏗️ Environment Setup"
 
                 script { _ ->
                     try {
                         def nodeHome = tool name: 'NodeJS-18', type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
                         env.PATH = "${nodeHome}/bin:${env.PATH}"
                     } catch (Exception e) {
-                        echo "NodeJS tool not configured, using system Node.js: ${e.getMessage()}"
+                        echo "[WARN] NodeJS tool not configured, using system Node.js: ${e.message}"
                     }
                 }
 
                 sh '''
-                    echo "Node.js version:"
-                    node --version
-                    echo "NPM version:"
-                    npm --version
-                    echo "Docker version:"
-                    docker --version
+                    echo "Node.js:" "$(node --version)"
+                    echo "NPM:" "$(npm --version)"
+                    echo "Docker:" "$(docker --version)"
                 '''
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Install & Audit') {
             steps {
-                echo "📦 Installing NPM dependencies..."
+                echo "📦 Installing dependencies"
 
                 sh '''
                     if [ -f package-lock.json ]; then
@@ -68,17 +63,16 @@ pipeline {
                     else
                         npm install --only=production
                     fi
-                    npm audit --audit-level moderate || echo "Audit completed with warnings"
+                    npm audit --audit-level moderate || echo "[WARN] Audit issues"
                 '''
             }
         }
 
-        stage('Code Quality & Testing') {
+        stage('Code Quality & Tests') {
             parallel {
-                stage('Lint Code') {
+                stage('Lint') {
                     steps {
-                        echo "🔍 Running code linting..."
-
+                        echo "🔍 Linting code"
                         sh '''
                             npm install --save-dev eslint
                             if [ ! -f .eslintrc.js ]; then
@@ -91,44 +85,43 @@ module.exports = {
 };
 EOF
                             fi
-                            npx eslint . --ext .js --ignore-pattern node_modules/ || echo "Linting completed with issues"
+                            npx eslint . --ext .js --ignore-pattern node_modules/ || echo "[WARN] Lint problems"
                         '''
                     }
                 }
-                stage('Security Scan') {
-                    steps {
-                        echo "🔒 Running security audit..."
 
+                stage('Security Audit') {
+                    steps {
+                        echo "🔒 Security scan"
                         sh '''
-                            npm audit --audit-level high || echo "Security audit completed with issues"
+                            npm audit --audit-level high || echo "[WARN] Security issues"
                         '''
                     }
                 }
+
                 stage('Unit Tests') {
                     steps {
-                        echo "🧪 Running unit tests..."
-
+                        echo "🧪 Running unit tests"
                         script { _ ->
                             try {
                                 sh '''
                                     npm install --save-dev jest supertest
                                     if [ ! -d tests ]; then
-                                        mkdir -p tests
+                                        mkdir tests
                                         cat > tests/api.test.js << 'EOF'
 const request = require('supertest');
-// const app = require('../server');
 
 describe('API Health Check', () => {
-    test('GET /health should return 200', async () => {
-        expect(true).toBe(true);
-    });
+  test('GET /health should return 200', async () => {
+    expect(true).toBe(true);
+  });
 });
 EOF
                                     fi
-                                    echo "Tests would run here - implement actual tests"
+                                    echo "Tests placeholder—add real JavaScript unit tests"
                                 '''
                             } catch (Exception e) {
-                                echo "⚠️ Tests failed but continuing build: ${e.getMessage()}"
+                                echo "⚠️ Test step failed but continuing build: ${e.message}"
                             }
                         }
                     }
@@ -138,16 +131,14 @@ EOF
 
         stage('Build Docker Image') {
             steps {
-                echo "🐳 Building Docker image..."
-
+                echo "🐳 Building Docker image"
                 script { _ ->
-                    def dockerImage = docker.build("${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}")
-                    if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
-                        dockerImage.tag("${env.DOCKER_LATEST_TAG}")
+                    def image = docker.build("${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}")
+                    if (env.BRANCH_NAME in ['main', 'master']) {
+                        image.tag(env.DOCKER_LATEST_TAG)
                     }
-                    env.DOCKER_IMAGE_ID = dockerImage.id
+                    env.DOCKER_IMAGE_ID = image.id
                 }
-
                 sh """
                     docker images ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
                     docker inspect ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
@@ -157,20 +148,19 @@ EOF
 
         stage('Test Docker Image') {
             steps {
-                echo "🧪 Testing Docker image..."
-
+                echo "🧪 Testing Docker container"
                 script { _ ->
                     try {
                         sh """
-                            docker run -d --name test-container-${env.BUILD_VERSION} -p 3001:3000 ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
+                            docker run -d --name test-${env.BUILD_VERSION} -p 3001:3000 ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
                             sleep 10
-                            curl -f http://localhost:3001/health || curl -f http://localhost:3001/ || echo "Basic connectivity test passed"
-                            echo "✅ Container health check passed"
+                            curl -f http://localhost:3001/health || curl -f http://localhost:3001/ || echo "[WARN] Basic container connectivity"
+                            echo "[OK] Container health check passed"
                         """
                     } finally {
                         sh """
-                            docker stop test-container-${env.BUILD_VERSION} || true
-                            docker rm test-container-${env.BUILD_VERSION} || true
+                            docker stop test-${env.BUILD_VERSION} || true
+                            docker rm test-${env.BUILD_VERSION} || true
                         """
                     }
                 }
@@ -186,38 +176,36 @@ EOF
                 }
             }
             steps {
-                echo "🚀 Pushing Docker image to Docker Hub..."
-
+                echo "🚀 Pushing Docker image"
                 script { _ ->
                     docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
                         docker.image("${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}").push()
-                        if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
+                        if (env.BRANCH_NAME in ['main','master']) {
                             docker.image("${env.DOCKERHUB_REPO}:${env.DOCKER_LATEST_TAG}").push()
                         }
                     }
                 }
-
-                echo "✅ Successfully pushed ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}"
+                echo "[OK] Pushed ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}"
             }
         }
 
         stage('Deploy to Staging') {
-            when {
-                branch 'develop'
-            }
+            when { branch 'develop' }
             steps {
-                echo "🚀 Deploying to staging environment..."
-
+                echo "🚀 Deploying to staging"
                 script { _ ->
                     sshagent(['ec2-staging-key']) {
                         sh """
                             ssh -o StrictHostKeyChecking=no ec2-user@your-staging-server << 'EOF'
-                            docker pull ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
-                            docker stop patient-data-staging || true
-                            docker rm patient-data-staging || true
-                            docker run -d --name patient-data-staging -p 3000:3000 -v /opt/patient-data/staging:/app/data -e NODE_ENV=staging --restart unless-stopped ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
-                            sleep 10
-                            curl -f http://localhost:3000/health || curl -f http://localhost:3000/ || echo "Staging deployment completed"
+                                docker pull ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
+                                docker stop patient-data-staging || true
+                                docker rm patient-data-staging || true
+                                docker run -d --name patient-data-staging -p 3000:3000 \
+                                    -v /opt/patient-data/staging:/app/data \
+                                    -e NODE_ENV=staging --restart unless-stopped \
+                                    ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
+                                sleep 10
+                                curl -f http://localhost:3000/health || echo "[WARN] Staging healthcheck fallback"
 EOF
                         """
                     }
@@ -226,35 +214,36 @@ EOF
         }
 
         stage('Deploy to Production') {
-            when {
-                anyOf {
-                    branch 'main'
-                    branch 'master'
-                }
-            }
+            when { anyOf { branch 'main'; branch 'master' } }
             steps {
                 script { _ ->
-                    def userInput = input(message: 'Deploy to Production?', ok: 'Deploy', submitterParameter: 'DEPLOYER')
-                    echo "User approved deployment: ${userInput}"
+                    def userInput = input message: 'Deploy to Production?', ok: 'Deploy', submitterParameter: 'DEPLOYER'
+                    echo "[INFO] Approved by: ${userInput}"
                     env.DEPLOYER = userInput
                 }
-                echo "🚀 Deploying to production environment..."
+
+                echo "🚀 Deploying to production"
                 script { _ ->
                     sshagent(['ec2-production-key']) {
                         sh """
                             ssh -o StrictHostKeyChecking=no ec2-user@your-production-server << 'EOF'
-                            docker pull ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
-                            docker stop patient-data-prod || true
-                            docker rm patient-data-prod || true
-                            docker run -d --name patient-data-prod -p 3000:3000 -v /opt/patient-data/production:/app/data -v /opt/patient-data/logs:/app/logs -e NODE_ENV=production --restart unless-stopped ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
-                            sleep 15
-                            curl -f http://localhost:3000/health || curl -f http://localhost:3000/ || echo "Production deployment completed"
-                            mkdir -p /opt/patient-data
-                            echo "Deployed ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG} at \$(date)" >> /opt/patient-data/deployment.log
+                                docker pull ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
+                                docker stop patient-data-prod || true
+                                docker rm patient-data-prod || true
+                                docker run -d --name patient-data-prod -p 3000:3000 \
+                                    -v /opt/patient-data/production:/app/data \
+                                    -v /opt/patient-data/logs:/app/logs \
+                                    -e NODE_ENV=production --restart unless-stopped \
+                                    ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
+                                sleep 15
+                                curl -f http://localhost:3000/health || echo "[WARN] Production healthcheck fallback"
+                                mkdir -p /opt/patient-data
+                                echo "Deployed ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG} at $(date)" >> /opt/patient-data/deployment.log
 EOF
-                        """
+                        }
                     }
                 }
+
                 script { _ ->
                     currentBuild.description += " | Deployed by: ${env.DEPLOYER ?: 'unknown'}"
                 }
@@ -264,31 +253,37 @@ EOF
 
     post {
         always {
-            echo "🧹 Cleaning up..."
-            sh """
-                docker image prune -f || true
-                docker images ${env.DOCKERHUB_REPO} --format "{{.Tag}}" | grep -E '^[0-9]+-[a-f0-9]+\$' | sort -rn | tail -n +6 | xargs -r -I {} docker rmi ${env.DOCKERHUB_REPO}:{} || true
-            """
-            archiveArtifacts artifacts: 'logs/**/*', allowEmptyArchive: true
+            script { _ ->
+                if (getContext(hudson.FilePath)) {
+                    echo "🧹 Performing post-build cleanup"
+                    sh "docker image prune -f || true"
+                    sh '''
+                        docker images ${env.DOCKERHUB_REPO} --format "{{.Tag}}" | \
+                        grep -E '^[0-9]+-[a-f0-9]+$' | sort -rn | tail -n +6 | \
+                        xargs -r -I {} docker rmi ${env.DOCKERHUB_REPO}:{} || true
+                    '''
+                    archiveArtifacts artifacts: 'logs/**/*', allowEmptyArchive: true
+                } else {
+                    echo "⚠️ No workspace available in post, skipping cleanup/archive"
+                }
+            }
         }
         success {
-            echo "✅ Pipeline completed successfully!"
+            echo "✅ Pipeline succeeded"
             script { _ ->
-                if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
-                    echo "Production deployment completed successfully"
-                    // Optional email notification here
+                if (env.BRANCH_NAME in ['main','master']) {
+                    echo "Production deployment successful — ready for notifications"
                 }
             }
         }
         failure {
-            echo "❌ Pipeline failed!"
-            // Optional failure notification here
+            echo "❌ Pipeline failed"
         }
         unstable {
-            echo "⚠️ Pipeline completed with warnings"
+            echo "⚠️ Pipeline unstable"
         }
         aborted {
-            echo "🛑 Pipeline was aborted"
+            echo "🛑 Pipeline aborted"
         }
     }
 }
