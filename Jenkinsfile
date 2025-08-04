@@ -52,15 +52,31 @@ pipeline {
 
     stage('Install & Audit') {
       steps {
-        echo "📦 Installing dependencies"
+        echo "📦 Installing NPM dependencies (production only)"
+    
+        // Ensure consistent behavior between runs
         sh '''
+          set -eux
+    
           if [ -f package-lock.json ]; then
-              npm ci --only=production
+            npm ci --only=production          # Fast, clean install using lockfile
           else
-              npm install --only=production
+            echo "[WARN] No package-lock.json found; using npm install"
+            npm install --only=production     # Less deterministic
           fi
-          npm audit --audit-level moderate || echo "[WARN] Audit issues"
         '''
+    
+        echo "🔎 Security audit (threshold: moderate)"
+    
+        script {
+          def auditStatus = sh script: 'npm audit --audit-level=moderate', returnStatus: true
+          if (auditStatus == 0) {
+            echo "[OK] npm audit passed (no moderate+ vulnerabilities)"
+          } else {
+            echo "[WARN] npm audit detected vulnerabilities (exit=${auditStatus})"
+            currentBuild.result = 'UNSTABLE'   // or throw error to fail pipeline
+          }
+        }
       }
     }
 
