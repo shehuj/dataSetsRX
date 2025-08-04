@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
@@ -405,7 +404,6 @@ module.exports = {
 if (require.main === module) {
     main();
 }
-=======
 // setup-database.js
 const sqlite3 = require('sqlite3').verbose();
 
@@ -447,4 +445,3 @@ db.serialize(() => {
 db.close();
 
 
->>>>>>> 08d4de7715cfb06336d339f873b0d46f214d59e2

@@ -23,11 +23,7 @@
   "devDependencies": {
     "nodemon": "^3.0.1"
   }
-<<<<<<< HEAD
-}
-=======
-}
-
+}}
 // Security middleware
 app.use(helmet());
 app.use(cors({
@@ -338,4 +334,3 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
->>>>>>> 08d4de7715cfb06336d339f873b0d46f214d59e2
