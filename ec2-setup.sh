@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 #!/bin/bash
 
 # Run this script on your EC2 instance to set up the environment
@@ -41,7 +40,6 @@ sudo chown ec2-user:ec2-user /var/log/patient-data-collection
 
 echo "EC2 environment setup completed!"
 echo "You can now run the deploy.sh script from your local machine."
-=======
 #!/usr/bin/env bash
 #
 # setup-ec2-env.sh — Provision Amazon Linux 2 or 2023 for
@@ -227,4 +225,3 @@ else
 fi
 
 print_status "EC2 setup complete! Visit: http://YOUR_SERVER_IP:3000"
->>>>>>> 08d4de7715cfb06336d339f873b0d46f214d59e2
