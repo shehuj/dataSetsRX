@@ -56,15 +56,26 @@ pipeline {
         echo "📦 Installing dependencies (production-only)"
 
         sh '''
+          #!/usr/bin/env bash
           set -euxo pipefail
-          trap 'echo "[ERROR] Install step failed at line $LINENO" >&2; exit 1' ERR
-
-          if [ -f package-lock.json ]; then
+          trap 'echo "[ERROR] Failed at /$0 line $LINENO" >&2; exit 1' ERR
+          
+          if [[ -f package-lock.json ]]; then
             npm ci --only=production
           else
-            echo "[WARN] No package-lock.json; running npm install"
+            echo "[WARN] Missing package-lock.json; using npm install"
             npm install --only=production
           fi
+          
+          echo "→ Running npm audit (threshold: moderate)"
+          if npm audit --audit-level=moderate; then
+            echo "[OK] Audit passed"
+          else
+            echo "[WARN] Audit found security issues"
+            exit 0  # or exit 1 to make audit failures break CI
+          fi
+          
+          echo "Install and audit steps completed successfully."
         '''
 
         echo "🔎 Running npm audit (moderate threshold)"
