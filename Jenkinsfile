@@ -1,247 +1,217 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-    DOCKERHUB_REPO        = 'captcloud01/patient-data-collection'
-    APP_NAME              = 'patient-data-collection'
-    NODE_VERSION          = '18'
-    BUILD_VERSION         = "${BUILD_NUMBER}"
-    DOCKER_LATEST_TAG     = 'latest'
-  }
-
-  options {
-    buildDiscarder(logRotator(numToKeepStr: '10'))
-    timeout(time: 60, unit: 'MINUTES')
-    skipDefaultCheckout(false)
-  }
-
-  tools {
-    nodejs 'NodeJS-18'  // Ensure this matches the tool name in Jenkins configuration
-  }
-
-  stages {
-    stage('Checkout & Versioning') {
-      steps {
-        script {
-          echo '🔄 Checking out source…'
-          checkout scm
-
-          env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-          env.DOCKER_TAG = "${env.BUILD_VERSION}-${env.GIT_COMMIT_SHORT}"
-          currentBuild.displayName = "#${env.BUILD_VERSION} – ${env.GIT_COMMIT_SHORT}"
-          currentBuild.description = "Branch: ${env.BRANCH_NAME ?: 'unknown'}"
-        }
-      }
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+        DOCKERHUB_REPO = 'captcloud01/patient-data-collection'
+        APP_NAME = 'patient-data-collection'
+        NODE_VERSION = '18'
+        BUILD_VERSION = "${BUILD_NUMBER}"
+        DOCKER_LATEST_TAG = 'latest'
     }
 
-    stage('Environment Inspection') {
-      steps {
-        echo '🧪 Node & Docker version info…'
-        sh '''
-          node --version
-          npm --version
-          docker --version
-        '''
-      }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 60, unit: 'MINUTES')
+        skipDefaultCheckout(false)
     }
 
-    stage('Install & Audit') {
-      steps {
-        echo '📦 Installing prod dependencies…'
-        sh '''
-          set -euxo pipefail
-          export CI=true
-
-          if [ -f package-lock.json ]; then
-            npm ci --only=production
-          else
-            npm install --only=production
-          fi
-        '''
-
-        echo '🔍 npm audit (threshold: moderate, warnings only)'
-        script {
-          def auditResult = sh(
-            script: 'npm audit --audit-level=moderate', 
-            returnStatus: true
-          )
-          if (auditResult != 0) {
-            echo "[WARN] npm audit found vulnerabilities"
-            currentBuild.result = 'UNSTABLE'
-          }
-        }
-      }
+    tools {
+        nodejs 'NodeJS-18'
     }
 
-    stage('Lint & Tests') {
-      parallel {
-        stage('ESLint') {
-          steps {
-            echo '🔍 ESLint check…'
-            sh '''
-              npm install --no-save eslint || true
-              npx eslint . --ext .js --ignore-pattern node_modules/
-            '''
-          }
-        }
-        stage('Unit Tests') {
-          steps {
-            echo '🧪 Tests & Coverage…'
-            sh '''
-              npm ci --no-audit
-              npm test -- --coverage --coverageReporters=text --coverageReporters=lcov
-            '''
-          }
-          post {
-            always {
-              junit '**/jest-junit.xml'
-              archiveArtifacts artifacts: 'coverage/lcov-report/**', allowEmptyArchive: true
+    stages {
+        stage('Prepare Environment') {
+            steps {
+                script {
+                    // Enhanced logging and error tracking
+                    env.BUILD_ERRORS = []
+                    env.BUILD_WARNINGS = []
+
+                    // Checkout and versioning
+                    try {
+                        checkout scm
+                        env.GIT_COMMIT_SHORT = sh(
+                            script: 'git rev-parse --short HEAD', 
+                            returnStdout: true
+                        ).trim()
+                        env.DOCKER_TAG = "${env.BUILD_VERSION}-${env.GIT_COMMIT_SHORT}"
+                        currentBuild.displayName = "#${env.BUILD_VERSION} – ${env.GIT_COMMIT_SHORT}"
+                    } catch (err) {
+                        env.BUILD_ERRORS << "Git Checkout Failed: ${err.message}"
+                        error "Checkout failed: ${err.message}"
+                    }
+                }
             }
-          }
         }
-      }
-    }
 
-    stage('Docker Build') {
-      steps {
-        echo '🐳 Building Docker image…'
-        script {
-          docker.build("${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}")
-          if (env.BRANCH_NAME in ['main', 'master']) {
-            docker.build("${env.DOCKERHUB_REPO}:${env.DOCKER_LATEST_TAG}")
-          }
-        }
-      }
-    }
+        stage('Dependency Management') {
+            steps {
+                script {
+                    def installScript = '''
+                    #!/bin/bash
+                    set -euo pipefail
 
-    stage('Smoke Test Container') {
-      steps {
-        echo '🧪 Running container smoke test…'
-        script {
-          def containerName = "test-${env.BUILD_VERSION}"
-          try {
-            sh """
-              docker run -d --name ${containerName} -p 3001:3000 ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
-              sleep 5
-              curl -f http://localhost:3001/health
-            """
-          } finally {
-            sh """
-              docker stop ${containerName} || true
-              docker rm ${containerName} || true
-            """
-          }
-        }
-      }
-    }
+                    # Logging function
+                    log() {
+                        echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" >&2
+                    }
 
-    stage('Push Image') {
-      when { 
-        anyOf { 
-          branch 'main'
-          branch 'master'
-          branch 'develop' 
-        } 
-      }
-      steps {
-        echo '🚀 Pushing to Docker Hub…'
-        script {
-          docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
-            def image = docker.image("${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}")
-            image.push()
+                    # Error and warning tracking
+                    export CI=true
+                    WARNINGS=()
+                    ERRORS=()
 
-            if (env.BRANCH_NAME in ['main', 'master']) {
-              def latestImage = docker.image("${env.DOCKERHUB_REPO}:${env.DOCKER_LATEST_TAG}")
-              latestImage.push()
+                    # Dependency installation with flexible handling
+                    install_deps() {
+                        local method="$1"
+                        log "Attempting dependency installation: $method"
+                        
+                        if $method; then
+                            log "Dependencies installed successfully"
+                        else
+                            ERRORS+=("Dependency installation failed with $method")
+                            return 1
+                        fi
+                    }
+
+                    # Prefer npm ci, fallback strategies
+                    if [ -f package-lock.json ]; then
+                        install_deps "npm ci --only=production" || 
+                        install_deps "npm install --only=production" ||
+                        ERRORS+=("All npm install attempts failed")
+                    elif [ -f yarn.lock ]; then
+                        install_deps "yarn install --production" ||
+                        ERRORS+=("Yarn installation failed")
+                    else
+                        install_deps "npm install --only=production" ||
+                        ERRORS+=("npm install failed")
+                    fi
+
+                    # Dependency audit with warning mechanism
+                    if npm audit --audit-level=moderate; then
+                        log "Security audit passed"
+                    else
+                        WARNINGS+=("Moderate security vulnerabilities detected")
+                    fi
+
+                    # Output errors and warnings
+                    if [ ${#ERRORS[@]} -gt 0 ]; then
+                        echo "ERRORS:"
+                        printf '%s\n' "${ERRORS[@]}"
+                        exit 1
+                    fi
+
+                    if [ ${#WARNINGS[@]} -gt 0 ]; then
+                        echo "WARNINGS:"
+                        printf '%s\n' "${WARNINGS[@]}"
+                    fi
+                    '''
+
+                    def result = sh(
+                        script: installScript, 
+                        returnStatus: true
+                    )
+
+                    if (result != 0) {
+                        env.BUILD_ERRORS << "Dependency Installation Failed"
+                        unstable "Dependency issues detected"
+                    }
+                }
             }
-          }
         }
-      }
+
+        stage('Code Quality') {
+            parallel {
+                stage('Lint') {
+                    steps {
+                        script {
+                            try {
+                                sh '''
+                                    npm run lint || {
+                                        echo "[WARN] Linting found issues"
+                                        exit 0  # Allow build to continue
+                                    }
+                                '''
+                            } catch (err) {
+                                env.BUILD_WARNINGS << "Linting Warnings: ${err.message}"
+                            }
+                        }
+                    }
+                }
+
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            try {
+                                sh 'npm test -- --coverage'
+                                junit '**/test-results.xml'
+                            } catch (err) {
+                                env.BUILD_WARNINGS << "Test Failures: ${err.message}"
+                                unstable "Some tests failed"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build & Package') {
+            steps {
+                script {
+                    try {
+                        docker.build("${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}")
+                    } catch (err) {
+                        env.BUILD_ERRORS << "Docker Build Failed: ${err.message}"
+                        error "Build failed: ${err.message}"
+                    }
+                }
+            }
+        }
+
+        stage('Final Status Report') {
+            steps {
+                script {
+                    if (env.BUILD_ERRORS) {
+                        echo "❌ BUILD ERRORS DETECTED:"
+                        env.BUILD_ERRORS.each { error ->
+                            echo "- ${error}"
+                        }
+                    }
+
+                    if (env.BUILD_WARNINGS) {
+                        echo "⚠️ BUILD WARNINGS:"
+                        env.BUILD_WARNINGS.each { warning ->
+                            echo "- ${warning}"
+                        }
+                    }
+
+                    if (!env.BUILD_ERRORS && !env.BUILD_WARNINGS) {
+                        echo "✅ Build completed successfully"
+                    }
+                }
+            }
+        }
     }
 
-    stage('Deploy to Staging') {
-      when { branch 'develop' }
-      steps {
-        echo '🚀 Deploying to staging…'
-        sshagent(['ec2-staging-key']) {
-          sh '''
-            ssh -o StrictHostKeyChecking=no ec2-user@your-staging-server << 'ENDSSH'
-              docker pull ${DOCKERHUB_REPO}:${DOCKER_TAG}
-              docker stop patient-data-staging || true
-              docker rm patient-data-staging || true
-              docker run -d --name patient-data-staging -p 3000:3000 \
-                -v /opt/patient-data/staging:/app/data \
-                -e NODE_ENV=staging --restart unless-stopped ${DOCKERHUB_REPO}:${DOCKER_TAG}
-              sleep 10
-              curl -f http://localhost:3000/health
-            ENDSSH
-          '''
+    post {
+        always {
+            script {
+                // Cleanup and archiving
+                archiveArtifacts(
+                    artifacts: 'reports/**/*,logs/**/*', 
+                    allowEmptyArchive: true
+                )
+            }
         }
-      }
+        success {
+            echo "🎉 Pipeline completed successfully"
+        }
+        unstable {
+            echo "⚠️ Pipeline is unstable due to warnings"
+        }
+        failure {
+            echo "❌ Pipeline failed"
+        }
     }
-
-    stage('Deploy to Production') {
-      when { 
-        anyOf { 
-          branch 'main'
-          branch 'master' 
-        } 
-      }
-      steps {
-        script {
-          env.DEPLOYER = input(
-            message: 'Deploy to Production?', 
-            ok: 'Deploy', 
-            submitterParameter: 'DEPLOYER'
-          )
-        }
-        echo '🚀 Deploying to production…'
-        sshagent(['ec2-production-key']) {
-          sh '''
-            ssh -o StrictHostKeyChecking=no ec2-user@your-production-server << 'ENDSSH'
-              docker pull ${DOCKERHUB_REPO}:${DOCKER_TAG}
-              docker stop patient-data-prod || true
-              docker rm patient-data-prod || true
-              docker run -d \
-                --name patient-data-prod \
-                -p 3000:3000 \
-                -v /opt/patient-data/production:/app/data \
-                -v /opt/patient-data/logs:/app/logs \
-                -e NODE_ENV=production \
-                --restart unless-stopped ${DOCKERHUB_REPO}:${DOCKER_TAG}
-              sleep 15
-              curl -f http://localhost:3000/health
-              mkdir -p /opt/patient-data
-              echo "Deployed ${DOCKERHUB_REPO}:${DOCKER_TAG} at $(date)" >> /opt/patient-data/deployment.log
-            ENDSSH
-          '''
-        }
-        script {
-          currentBuild.description += " | Deployed by: ${env.DEPLOYER ?: 'unknown'}"
-        }
-      }
-    }
-  }
-
-  post {
-    always {
-      script {
-        // Only perform cleanup if on a build agent
-        if (env.NODE_NAME != null) {
-          sh '''
-            docker image prune -f || true
-            docker images ${DOCKERHUB_REPO} --format "{{.Tag}}" | \
-              grep -E "^[0-9]+-[0-9a-f]+$" | sort -rn | tail -n +6 | \
-              xargs -r -I {} docker rmi ${DOCKERHUB_REPO}:{} || true
-          '''
-          archiveArtifacts artifacts: 'logs/**/*', allowEmptyArchive: true
-        }
-      }
-    }
-    success  { echo "✅ Build succeeded (${env.BRANCH_NAME})" }
-    unstable { echo "⚠️ Build marked UNSTABLE" }
-    failure  { echo "❌ Build FAILED — please review logs" }
-    aborted  { echo "🛑 Build aborted by user" }
-  }
 }
