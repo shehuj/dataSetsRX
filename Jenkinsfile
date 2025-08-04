@@ -109,6 +109,38 @@ EOF
           }
         }
 
+        stage('Run Tests') {
+          steps {
+            sh 'npm ci'
+            sh 'npm test'
+            sh 'npm test -- --coverage'
+          }
+          post {
+            always {
+              junit '**/jest-junit.xml' // if you add jest‑junit reporter
+              archiveArtifacts artifacts: 'coverage/lcov-report/**', allowEmptyArchive: true
+            }
+            unstable {
+              echo 'Tests found vulnerabilities; marking build UNSTABLE'
+            }
+          }
+        }
+        stage('Code Coverage') {
+          steps {
+            echo "📊 Generating code coverage report"
+            sh '''
+              npm install --save-dev jest jest-junit
+              npx jest --coverage --coverageReporters=text --coverageReporters=lcov
+            '''
+          }
+          post {
+            always {
+              junit '**/jest-junit.xml' // if you add jest‑junit reporter
+              archiveArtifacts artifacts: 'coverage/lcov-report/**', allowEmptyArchive: true
+            }
+          }
+        }
+
         stage('Unit Tests') {
           steps {
             echo "🧪 Running unit tests"
