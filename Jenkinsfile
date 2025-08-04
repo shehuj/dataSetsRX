@@ -4,7 +4,7 @@ pipeline {
     environment {
         // Docker Hub credentials (stored in Jenkins credentials)
         DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-        DOCKERHUB_REPO = 'your-dockerhub-username/patient-data-collection'
+        DOCKERHUB_REPO = 'captcloud01/patient-data-collection'
         
         // Application configuration
         APP_NAME = 'patient-data-collection'
