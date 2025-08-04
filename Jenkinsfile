@@ -58,6 +58,7 @@ pipeline {
         sh '''
           #!/usr/bin/env bash
           set -euxo pipefail
+          export CI=true
           trap 'echo "[ERROR] Failed at /$0 line $LINENO" >&2; exit 1' ERR
           
           if [[ -f package-lock.json ]]; then
