@@ -59,6 +59,7 @@ pipeline {
           #!/usr/bin/env bash
           set -euxo pipefail
           export CI=true
+          
           trap 'echo "[ERROR] Failed at /$0 line $LINENO" >&2; exit 1' ERR
           
           if [[ -f package-lock.json ]]; then
@@ -69,12 +70,7 @@ pipeline {
           fi
           
           echo "→ Running npm audit (threshold: moderate)"
-          if npm audit --audit-level=moderate; then
-            echo "[OK] Audit passed"
-          else
-            echo "[WARN] Audit found security issues"
-            exit 0  # or exit 1 to make audit failures break CI
-          fi
+          npm audit --audit-level=moderate || true
           
           echo "Install and audit steps completed successfully."
         '''
