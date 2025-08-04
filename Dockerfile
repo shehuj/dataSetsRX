@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies (including dev dependencies for build)
-RUN npm ci --include=dev
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -59,4 +59,5 @@ ENTRYPOINT ["dumb-init", "--"]
 
 # Start the application
 CMD ["node", "server.js"]
+
 
