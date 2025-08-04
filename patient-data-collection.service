@@ -1,0 +1,52 @@
+[Unit]
+Description=Patient Data Collection Survey System
+Documentation=https://github.com/your-org/patient-data-collection
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=nodejs
+Group=nodejs
+WorkingDirectory=/opt/patient-data-collection
+ExecStart=/usr/bin/node server.js
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=30
+RestartSec=5
+Restart=always
+RestartKillSignal=SIGKILL
+
+# Environment variables
+Environment=NODE_ENV=production
+Environment=PORT=3000
+EnvironmentFile=-/opt/patient-data-collection/.env
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/patient-data-collection
+ReadWritePaths=/var/log/patient-data-collection
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+PrivateDevices=true
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+TasksMax=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=patient-data-collection
+
+[Install]
+WantedBy=multi-user.target
