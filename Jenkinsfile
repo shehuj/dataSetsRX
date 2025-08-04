@@ -189,39 +189,41 @@ EOF
       }
     }
 
-    stage('Deploy to Production') {
-      when { anyOf { branch 'main'; branch 'master' } }
-      steps {
-        script { _ ->
-          env.DEPLOYER = input message: 'Deploy to Production?', ok: 'Deploy', submitterParameter: 'DEPLOYER'
-          echo "[INFO] Approved by: ${env.DEPLOYER}"
-        }
-        echo '🚀 Deploying to production…'
-        script { _ ->
-          sshagent(['ec2-production-key']) {
-            sh """
-              ssh -o StrictHostKeyChecking=no ec2-user@your-production-server << 'ENDSSH'
-                docker pull ${DOCKERHUB_REPO}:${env.DOCKER_TAG}
-                docker stop patient-data-prod || true
-                docker rm patient-data-prod || true
-                docker run -d --name patient-data-prod -p 3000:3000 \
-                  -v /opt/patient-data/production:/app/data \
-                  -v /opt/patient-data/logs:/app/logs \
-                  -e NODE_ENV=production --restart unless-stopped ${env.DOCKERHUB_REPO}:${env.DOCKER_TAG}
-                sleep 15
-                curl -f http://localhost:3000/health || echo "[WARN] Prod responds"
-                mkdir -p /opt/patient-data
-                echo "Deployed ${DOCKERHUB_REPO}:${env.DOCKER_TAG} at $(date)" >> /opt/patient-data/deployment.log
-              ENDSSH
-            """
+          stage('Deploy to Production') {
+            when { anyOf { branch 'main'; branch 'master' } }
+            steps {
+              script { _ ->
+                env.DEPLOYER = input message: 'Deploy to Production?', ok: 'Deploy', submitterParameter: 'DEPLOYER'
+                echo "[INFO] Approved by: ${env.DEPLOYER}"
+              }
+              echo '🚀 Deploying to production…'
+              script { _ ->
+                sshagent(['ec2-production-key']) {
+                  sh '''
+                    ssh -o StrictHostKeyChecking=no ec2-user@your-production-server << 'ENDSSH'
+                      docker pull ${DOCKERHUB_REPO}:${DOCKER_TAG}
+                      docker stop patient-data-prod || true
+                      docker rm patient-data-prod || true
+                      docker run -d \
+                        --name patient-data-prod \
+                        -p 3000:3000 \
+                        -v /opt/patient-data/production:/app/data \
+                        -v /opt/patient-data/logs:/app/logs \
+                        -e NODE_ENV=production \
+                        --restart unless-stopped ${DOCKERHUB_REPO}:${DOCKER_TAG}
+                      sleep 15
+                      curl -f http://localhost:3000/health || echo "[WARN] Prod responds"
+                      mkdir -p /opt/patient-data
+                      echo "Deployed ${DOCKERHUB_REPO}:${DOCKER_TAG} at $(date)" >> /opt/patient-data/deployment.log
+                    ENDSSH
+                  '''
+                }
+              }
+              script { _ ->
+                currentBuild.description += " | Deployed by: ${env.DEPLOYER ?: 'unknown'}"
+              }
+            }
           }
-        }
-        script { _ ->
-          currentBuild.description += " | Deployed by: ${env.DEPLOYER ?: 'unknown'}"
-        }
-      }
-    }
-  }
 
   post {
     always {
