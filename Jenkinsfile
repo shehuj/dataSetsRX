@@ -298,15 +298,15 @@ EOF
                         branch 'main'
                         branch 'master'
                     }
-                    input message: 'Deploy to Production?', ok: 'Deploy',
-                          submitterParameter: 'DEPLOYER'
                 }
             }
             steps {
-                echo "🚀 Deploying to production environment..."
-                
                 script {
-                    // Deploy to production EC2 instance
+                    def proceed = input message: 'Deploy to Production?', ok: 'Deploy', submitterParameter: 'DEPLOYER'
+                    echo "User approved deployment: ${proceed}"
+                }
+                echo "🚀 Deploying to production environment..."
+                script {
                     sshagent(['ec2-production-key']) {
                         sh """
                             ssh -o StrictHostKeyChecking=no ec2-user@your-production-server << 'EOF'
@@ -337,8 +337,6 @@ EOF
                         """
                     }
                 }
-                
-                // Record deployment
                 script {
                     currentBuild.description += " | Deployed by: ${params.DEPLOYER}"
                 }
@@ -372,41 +370,4 @@ EOF
                 if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
                     // Send success notification
                     emailext (
-                        subject: "✅ Production Deployment Successful - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                        body: """
-                        The patient data collection application has been successfully deployed to production.
-                        
-                        Build: ${env.BUILD_URL}
-                        Docker Image: ${DOCKERHUB_REPO}:${DOCKER_TAG}
-                        Git Commit: ${GIT_COMMIT_SHORT}
-                        
-                        The application is now live and ready to collect patient survey data.
-                        """,
-                        to: "devops@yourcompany.com"
-                    )
-                }
-            }
-        }
-        
-        failure {
-            echo "❌ Pipeline failed!"
-            
-            // Notify failure
-            emailext (
-                subject: "❌ Build Failed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: """
-                The build has failed. Please check the Jenkins console output for details.
-                
-                Build: ${env.BUILD_URL}
-                Branch: ${env.BRANCH_NAME}
-                Commit: ${GIT_COMMIT_SHORT}
-                """,
-                to: "devops@yourcompany.com"
-            )
-        }
-        
-        unstable {
-            echo "⚠️ Build is unstable"
-        }
-    }
-}
+                        subject: "✅ Production Deployment Successful 
